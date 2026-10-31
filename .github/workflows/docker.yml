@@ -68,4 +68,7 @@ jobs:
     # 7. Report build status
     - name: 'Report Success'
       if: github.event_name != 'pull_request'
-      run: curl ${{ secrets.INOTIFY }}/Inotify/latestIsOK!
+      # Optional: skipped when the INOTIFY secret is not set
+      env:
+        INOTIFY: ${{ secrets.INOTIFY }}
+      run: if [ -n "$INOTIFY" ]; then curl "$INOTIFY/Inotify/latestIsOK!"; fi
