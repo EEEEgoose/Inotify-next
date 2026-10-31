@@ -1,5 +1,6 @@
 mod account;
 mod admin;
+mod backup;
 mod bark;
 mod channels;
 mod oauth;
@@ -28,6 +29,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/stats", get(admin::stats))
         .route("/api/v1/channel-kinds", get(channels::kinds))
         .route("/api/v1/channels", get(channels::list).post(channels::create))
+        .route("/api/v1/channels/export", post(backup::export))
+        .route("/api/v1/channels/import", post(backup::import))
         .route("/api/v1/channels/{id}", put(channels::update).delete(channels::remove))
         .route("/api/v1/channels/{id}/test", post(channels::test))
         .route("/api/v1/users", get(users::list).post(users::create))

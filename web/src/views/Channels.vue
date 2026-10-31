@@ -2,7 +2,11 @@
   <div>
     <div class="page-head">
       <h2>消息渠道</h2>
-      <el-button type="primary" :icon="Plus" @click="openCreate">添加渠道</el-button>
+      <div>
+        <el-button :icon="Download" :disabled="channels.length === 0" @click="openBackup('export')">导出</el-button>
+        <el-button :icon="Upload" @click="openBackup('import')">导入</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">添加渠道</el-button>
+      </div>
     </div>
 
     <el-alert v-if="!loading && channels.length === 0" type="info" :closable="false" show-icon>
@@ -61,13 +65,41 @@
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="backup.open"
+      :title="backup.mode === 'export' ? '导出渠道' : '导入渠道'"
+      width="min(480px, 94vw)"
+    >
+      <el-form label-position="top" @submit.prevent>
+        <el-form-item v-if="backup.mode === 'import'" label="备份文件" required>
+          <input ref="fileInput" type="file" accept=".json,application/json" @change="pickFile" />
+        </el-form-item>
+        <el-form-item label="备份密码" required>
+          <el-input v-model="backup.password" type="password" show-password autocomplete="new-password" />
+          <div v-if="backup.mode === 'export'" class="muted">
+            导出文件包含渠道的全部配置（含密钥），用此密码加密，至少 8 位。忘记密码将无法恢复。
+          </div>
+          <div v-else class="muted">已有相同 Key 的渠道会跳过；Key 被占用时生成新 Key（旧的推送地址需更新）。</div>
+        </el-form-item>
+        <el-form-item v-if="backup.mode === 'export'" label="确认密码" required>
+          <el-input v-model="backup.confirm" type="password" show-password autocomplete="new-password" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="backup.open = false">取消</el-button>
+        <el-button type="primary" :loading="backup.busy" @click="runBackup">
+          {{ backup.mode === 'export' ? '导出' : '导入' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Download, Plus, Upload } from '@element-plus/icons-vue'
 import { api, type Channel, type ConfigValue, type KindInfo } from '../api'
 import { copy } from '../session'
 import ChannelForm from '../components/ChannelForm.vue'
@@ -163,6 +195,65 @@ async function remove(c: Channel) {
     channels.value = channels.value.filter((x) => x.id !== c.id)
   } catch (e) {
     ElMessage.error((e as Error).message)
+  }
+}
+
+const fileInput = ref<HTMLInputElement>()
+const backup = reactive({
+  open: false,
+  mode: 'export' as 'export' | 'import',
+  password: '',
+  confirm: '',
+  file: null as File | null,
+  busy: false,
+})
+
+function openBackup(mode: 'export' | 'import') {
+  Object.assign(backup, { open: true, mode, password: '', confirm: '', file: null })
+  if (fileInput.value) fileInput.value.value = ''
+}
+
+function pickFile(e: Event) {
+  backup.file = (e.target as HTMLInputElement).files?.[0] ?? null
+}
+
+async function runBackup() {
+  if (backup.mode === 'export') {
+    if (backup.password.length < 8) return ElMessage.warning('备份密码至少 8 位')
+    if (backup.password !== backup.confirm) return ElMessage.warning('两次输入的密码不一致')
+  } else {
+    if (!backup.file) return ElMessage.warning('请选择备份文件')
+    if (!backup.password) return ElMessage.warning('请输入备份密码')
+  }
+  backup.busy = true
+  try {
+    if (backup.mode === 'export') {
+      const data = await api.exportChannels(backup.password)
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `inotify-channels-${new Date().toISOString().slice(0, 10)}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      ElMessage.success('已导出')
+    } else {
+      let file: unknown
+      try {
+        file = JSON.parse(await backup.file!.text())
+      } catch {
+        return ElMessage.error('不是有效的备份文件')
+      }
+      const r = await api.importChannels(backup.password, file)
+      ElMessage.success(
+        `导入 ${r.imported} 个，跳过 ${r.skipped} 个` + (r.rekeyed ? `，其中 ${r.rekeyed} 个生成了新 Key` : ''),
+      )
+      await load()
+    }
+    backup.open = false
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    backup.busy = false
   }
 }
 

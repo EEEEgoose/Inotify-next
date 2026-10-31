@@ -74,7 +74,7 @@ pub async fn create(
     Ok(Json(channel))
 }
 
-fn non_empty_name(name: &str, kind: Kind) -> String {
+pub(super) fn non_empty_name(name: &str, kind: Kind) -> String {
     match name.trim() {
         "" => kind.info().name.to_string(),
         name => name.to_string(),

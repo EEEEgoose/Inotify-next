@@ -80,6 +80,10 @@ Inotify 按 [bark-server](https://github.com/Finb/bark-server) 的协议内置�
 2. 在 Bark App 中添加该服务器，App 注册后会自动出现在「消息渠道」中
 3. 支持 Bark 推送 API 的工具（Home Assistant、青龙等）可把服务器填成上面的地址、Key 填 send token，消息会分发到你的所有渠道
 
+## 备份渠道
+
+在「消息渠道」页点「导出」，设置密码后下载加密备份（Argon2id + AES-256-GCM，包含渠道密钥和 Bark 设备）；在新服务器或新账号上点「导入」，选择文件并输入同一密码即可恢复。已有相同 Key 的渠道会跳过；Key 被其他用户占用时生成新 Key。
+
 ## GitHub 登录
 
 1. 在 GitHub → Settings → Developer settings → OAuth Apps 创建应用，回调地址见后台「系统设置」页

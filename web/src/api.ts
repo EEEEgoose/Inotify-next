@@ -128,6 +128,13 @@ export const api = {
     request<Channel>('PUT', `/api/v1/channels/${id}`, c),
   deleteChannel: (id: number) => request('DELETE', `/api/v1/channels/${id}`),
   testChannel: (id: number) => request<{ ok: boolean; error?: string }>('POST', `/api/v1/channels/${id}/test`),
+  /** The encrypted backup is opaque to the UI: it is saved and uploaded as-is. */
+  exportChannels: (password: string) => request<object>('POST', '/api/v1/channels/export', { password }),
+  importChannels: (password: string, backup: unknown) =>
+    request<{ imported: number; skipped: number; rekeyed: number }>('POST', '/api/v1/channels/import', {
+      password,
+      backup,
+    }),
 
   /** Sends with a send token or channel key, not the session. */
   send: (token: string, msg: { title?: string; body?: string }) =>

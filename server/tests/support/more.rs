@@ -444,3 +444,115 @@ async fn stats_and_static_fallback() {
     let (status, _) = app.call(Method::GET, "/no/such/file.js", None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn channel_backup_round_trip() {
+    let mock = MockServer::start().await;
+    let app = app(&mock).await;
+    let (token, user) = app.admin().await;
+    let hook = json!({ "method": "POST", "url": "https://example.com/hook", "content_type": "json", "body": "{\"t\":\"{title}\"}" });
+    let (_, webhook) = app
+        .call(
+            Method::POST,
+            "/api/v1/channels",
+            Some(&token),
+            Some(json!({ "kind": "webhook", "name": "hook", "config": hook, "active": false })),
+        )
+        .await;
+    let base = format!("/bark/{}", user["send_token"].as_str().unwrap());
+    let (status, _) = app
+        .send(super::form(&format!("{base}/register"), "device_token=tok1"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, err) = app
+        .call(
+            Method::POST,
+            "/api/v1/channels/export",
+            Some(&token),
+            Some(json!({ "password": "short" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    let (status, backup) = app
+        .call(
+            Method::POST,
+            "/api/v1/channels/export",
+            Some(&token),
+            Some(json!({ "password": "backup-pass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{backup}");
+    assert_eq!(backup["format"], "inotify-next-channels");
+    // Secrets are not readable in the file.
+    assert!(!backup.to_string().contains("example.com"));
+
+    let import = |password: &str| json!({ "password": password, "backup": backup.clone() });
+    let (status, err) = app
+        .call(
+            Method::POST,
+            "/api/v1/channels/import",
+            Some(&token),
+            Some(import("wrong-pass")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+
+    // Same user, same server: everything already exists.
+    let (status, result) = app
+        .call(
+            Method::POST,
+            "/api/v1/channels/import",
+            Some(&token),
+            Some(import("backup-pass")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result, json!({ "imported": 0, "skipped": 2, "rekeyed": 0 }));
+
+    // Deleted channels come back with their key, config and state.
+    let uri = format!("/api/v1/channels/{}", webhook["id"]);
+    app.call(Method::DELETE, &uri, Some(&token), None).await;
+    let (_, result) = app
+        .call(
+            Method::POST,
+            "/api/v1/channels/import",
+            Some(&token),
+            Some(import("backup-pass")),
+        )
+        .await;
+    assert_eq!(result, json!({ "imported": 1, "skipped": 1, "rekeyed": 0 }));
+    let (_, channels) = app.call(Method::GET, "/api/v1/channels", Some(&token), None).await;
+    let restored = channels
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "webhook")
+        .unwrap();
+    assert_eq!(restored["key"], webhook["key"]);
+    assert_eq!(restored["config"], hook);
+    assert_eq!(restored["active"], false);
+
+    // Another user gets copies under new keys; the Bark device token comes along.
+    app.call(
+        Method::POST,
+        "/api/v1/users",
+        Some(&token),
+        Some(json!({ "username": "carol", "password": "carol-password" })),
+    )
+    .await;
+    let (carol, _) = app.login("carol", "carol-password").await;
+    let (_, result) = app
+        .call(
+            Method::POST,
+            "/api/v1/channels/import",
+            Some(&carol),
+            Some(import("backup-pass")),
+        )
+        .await;
+    assert_eq!(result, json!({ "imported": 2, "skipped": 0, "rekeyed": 2 }));
+    let (_, mine) = app.call(Method::GET, "/api/v1/channels", Some(&carol), None).await;
+    let bark = mine.as_array().unwrap().iter().find(|c| c["kind"] == "bark").unwrap();
+    assert_eq!(bark["config"]["device_token"], "tok1");
+    assert!(channels.as_array().unwrap().iter().all(|c| c["key"] != bark["key"]));
+}
