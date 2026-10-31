@@ -60,14 +60,14 @@ fn internal(e: impl Into<AppError>) -> Response {
     failed(e.status(), e.to_string())
 }
 
-async fn user_for(state: &AppState, token: &str) -> Result<User, Response> {
+async fn user_for(state: &AppState, token: &str) -> Result<User, Box<Response>> {
     match db::active_user_by_send_token(&state.db, token).await {
         Ok(Some(user)) => Ok(user),
-        Ok(None) => Err(failed(
+        Ok(None) => Err(Box::new(failed(
             StatusCode::BAD_REQUEST,
             "invalid server address: unknown send token",
-        )),
-        Err(e) => Err(internal(e)),
+        ))),
+        Err(e) => Err(Box::new(internal(e))),
     }
 }
 
@@ -109,14 +109,14 @@ fn take_string(params: &mut Map<String, Value>, key: &str) -> Option<String> {
 async fn ping(State(state): State<AppState>, Path(token): Path<String>) -> Response {
     match user_for(&state, &token).await {
         Ok(_) => ok("pong"),
-        Err(resp) => resp,
+        Err(resp) => *resp,
     }
 }
 
 async fn info(State(state): State<AppState>, Path(token): Path<String>) -> Response {
     let user = match user_for(&state, &token).await {
         Ok(user) => user,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let devices: Result<i64, _> =
         sqlx::query_scalar("SELECT COUNT(*) FROM channels WHERE user_id = ? AND kind = 'bark'")
@@ -145,7 +145,7 @@ async fn register(
 ) -> Response {
     let user = match user_for(&state, &token).await {
         Ok(user) => user,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let mut params = match collect_params(query, &headers, &body, HashMap::new()) {
         Ok(p) => p,
@@ -210,7 +210,7 @@ async fn register_device(state: &AppState, user: &User, device_key: &str, device
 async fn register_check(State(state): State<AppState>, Path((token, device_key)): Path<(String, String)>) -> Response {
     let user = match user_for(&state, &token).await {
         Ok(user) => user,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     match db::channel_by_key(&state.db, &device_key).await {
         Ok(Some(c)) if c.user_id == user.id && c.kind == Kind::Bark.as_str() => ok("success"),
@@ -229,7 +229,7 @@ async fn push(
     let token = path.remove("token").unwrap_or_default();
     let user = match user_for(&state, &token).await {
         Ok(user) => user,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     if let Some(key) = path.remove("key") {
         path.insert("device_key".into(), key);
