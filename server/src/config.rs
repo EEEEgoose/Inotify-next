@@ -7,6 +7,11 @@ pub struct Config {
     /// Let webhook and email channels reach loopback / LAN / link-local addresses.
     pub allow_private_targets: bool,
     pub send_concurrency: usize,
+    /// Behind a reverse proxy: take the client IP from `X-Forwarded-For`. Off, it is ignored.
+    pub trust_proxy: bool,
+    /// Skip the Turnstile check on login even when it is enabled in the settings, to recover from
+    /// a wrong site key or an unreachable Cloudflare.
+    pub disable_turnstile: bool,
     pub endpoints: Endpoints,
 }
 
@@ -16,8 +21,7 @@ pub struct Endpoints {
     pub apns: String,
     pub telegram: String,
     pub wecom: String,
-    pub github_web: String,
-    pub github_api: String,
+    pub turnstile: String,
 }
 
 impl Default for Endpoints {
@@ -26,8 +30,7 @@ impl Default for Endpoints {
             apns: "https://api.push.apple.com".into(),
             telegram: "https://api.telegram.org".into(),
             wecom: "https://qyapi.weixin.qq.com".into(),
-            github_web: "https://github.com".into(),
-            github_api: "https://api.github.com".into(),
+            turnstile: "https://challenges.cloudflare.com".into(),
         }
     }
 }
@@ -37,14 +40,19 @@ impl Config {
         Self {
             listen: env::var("INOTIFY_LISTEN").unwrap_or_else(|_| "0.0.0.0:8000".into()),
             data_dir: env::var("INOTIFY_DATA_DIR").unwrap_or_else(|_| "data".into()).into(),
-            allow_private_targets: env::var("INOTIFY_ALLOW_PRIVATE_TARGETS")
-                .is_ok_and(|v| matches!(v.as_str(), "1" | "true")),
+            allow_private_targets: flag("INOTIFY_ALLOW_PRIVATE_TARGETS"),
             send_concurrency: env::var("INOTIFY_SEND_CONCURRENCY")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .filter(|&n| n > 0)
                 .unwrap_or(8),
+            trust_proxy: flag("INOTIFY_TRUST_PROXY"),
+            disable_turnstile: flag("INOTIFY_DISABLE_TURNSTILE"),
             endpoints: Endpoints::default(),
         }
     }
+}
+
+fn flag(name: &str) -> bool {
+    env::var(name).is_ok_and(|v| matches!(v.as_str(), "1" | "true"))
 }

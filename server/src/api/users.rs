@@ -39,7 +39,13 @@ pub async fn create(State(state): State<AppState>, _: AdminUser, Json(req): Json
         return Err(AppError::Conflict("用户名已存在".into()));
     }
     Ok(Json(
-        db::create_user(&state.db, username, Some(&hash_password(&req.password)?), req.is_admin).await?,
+        db::create_user(
+            &state.db,
+            username,
+            Some(&hash_password(&req.password).await?),
+            req.is_admin,
+        )
+        .await?,
     ))
 }
 
@@ -63,17 +69,22 @@ pub async fn update(
     let password_hash = match &req.password {
         Some(p) => {
             check_password_strength(p)?;
-            Some(hash_password(p)?)
+            Some(hash_password(p).await?)
         }
         None => user.password_hash,
     };
-    let user = sqlx::query_as("UPDATE users SET active = ?, is_admin = ?, password_hash = ? WHERE id = ? RETURNING *")
-        .bind(req.active.unwrap_or(user.active))
-        .bind(req.is_admin.unwrap_or(user.is_admin))
-        .bind(password_hash)
-        .bind(id)
-        .fetch_one(&state.db)
-        .await?;
+    // A new password or disabling ends the user's sessions (also after re-enabling).
+    let revoke = req.password.is_some() || req.active == Some(false);
+    let user = sqlx::query_as(
+        "UPDATE users SET active = ?, is_admin = ?, password_hash = ?, token_version = token_version + ? WHERE id = ? RETURNING *",
+    )
+    .bind(req.active.unwrap_or(user.active))
+    .bind(req.is_admin.unwrap_or(user.is_admin))
+    .bind(password_hash)
+    .bind(revoke as i64)
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
     Ok(Json(user))
 }
 

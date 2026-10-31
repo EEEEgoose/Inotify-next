@@ -246,6 +246,7 @@ pub(crate) fn check_api_result(result: &Value, code_field: &str, msg_field: &str
             let msg = result.get(msg_field).and_then(Value::as_str).unwrap_or("");
             anyhow::bail!("API error {code}: {msg}")
         }
-        None => anyhow::bail!("unexpected response: {result}"),
+        // Not echoing the response: the URL may be user-supplied.
+        None => anyhow::bail!("unexpected response without `{code_field}`"),
     }
 }

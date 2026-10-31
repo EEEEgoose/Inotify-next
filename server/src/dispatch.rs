@@ -6,13 +6,22 @@ use crate::{
     db::Channel,
     error::AppError,
 };
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 use tokio::{
     sync::{mpsc, Semaphore},
     task::JoinSet,
 };
 
 const QUEUE_CAPACITY: usize = 10_000;
+/// Jobs one user may have waiting or in delivery, so a single token cannot fill the queue.
+const MAX_PENDING_PER_USER: usize = 500;
+/// Message size limits, in bytes (extras as JSON).
+const MAX_TITLE: usize = 2 * 1024;
+const MAX_BODY: usize = 64 * 1024;
+const MAX_EXTRAS: usize = 16 * 1024;
 
 #[derive(Debug)]
 pub struct Job {
@@ -22,33 +31,88 @@ pub struct Job {
     pub msg: Message,
 }
 
+type PendingCounts = Arc<Mutex<HashMap<i64, usize>>>;
+
+/// Counts a job against its user until dropped (delivered, or refused by the queue).
+struct Pending {
+    counts: PendingCounts,
+    user_id: i64,
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        let mut counts = self.counts.lock().unwrap();
+        if let Some(n) = counts.get_mut(&self.user_id) {
+            *n -= 1;
+            if *n == 0 {
+                counts.remove(&self.user_id);
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Dispatcher {
-    tx: mpsc::Sender<Job>,
+    tx: mpsc::Sender<(Job, Pending)>,
+    pending: PendingCounts,
 }
 
 impl Dispatcher {
     pub fn start(ctx: Arc<SendCtx>, concurrency: usize) -> Self {
-        let (tx, mut rx) = mpsc::channel::<Job>(QUEUE_CAPACITY);
+        let (tx, mut rx) = mpsc::channel::<(Job, Pending)>(QUEUE_CAPACITY);
         let limit = Arc::new(Semaphore::new(concurrency));
         tokio::spawn(async move {
-            while let Some(job) = rx.recv().await {
+            while let Some((job, pending)) = rx.recv().await {
                 let permit = limit.clone().acquire_owned().await.expect("semaphore is never closed");
                 let ctx = ctx.clone();
                 tokio::spawn(async move {
                     if let Err(e) = deliver(&ctx, job).await {
                         tracing::error!("deliver job: {e:#}");
                     }
-                    drop(permit);
+                    drop((permit, pending));
                 });
             }
         });
-        Self { tx }
+        Self {
+            tx,
+            pending: Default::default(),
+        }
     }
 
     pub fn enqueue(&self, job: Job) -> Result<(), AppError> {
-        self.tx.try_send(job).map_err(|_| AppError::Busy)
+        check_size(&job.msg)?;
+        {
+            let mut counts = self.pending.lock().unwrap();
+            let n = counts.entry(job.user_id).or_default();
+            if *n >= MAX_PENDING_PER_USER {
+                return Err(AppError::TooManyRequests("too many messages queued, slow down".into()));
+            }
+            *n += 1;
+        }
+        let pending = Pending {
+            counts: self.pending.clone(),
+            user_id: job.user_id,
+        };
+        self.tx.try_send((job, pending)).map_err(|_| AppError::Busy)
     }
+}
+
+fn check_size(msg: &Message) -> Result<(), AppError> {
+    let len = |s: &Option<String>| s.as_ref().map_or(0, String::len);
+    let too_long = |what: &str, max: usize| Err(AppError::BadRequest(format!("{what} is longer than {max} bytes")));
+    if len(&msg.title) > MAX_TITLE {
+        return too_long("title", MAX_TITLE);
+    }
+    if len(&msg.subtitle) > MAX_TITLE {
+        return too_long("subtitle", MAX_TITLE);
+    }
+    if len(&msg.body) > MAX_BODY {
+        return too_long("body", MAX_BODY);
+    }
+    if serde_json::to_vec(&msg.extras).map_or(0, |v| v.len()) > MAX_EXTRAS {
+        return too_long("extra parameters", MAX_EXTRAS);
+    }
+    Ok(())
 }
 
 async fn deliver(ctx: &Arc<SendCtx>, job: Job) -> anyhow::Result<()> {

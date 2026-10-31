@@ -10,19 +10,38 @@ use argon2::{
 use axum::{extract::FromRequestParts, http::request::Parts};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 
 const SESSION_HOURS: i64 = 24 * 7;
 
-pub fn hash_password(password: &str) -> anyhow::Result<String> {
-    let salt = SaltString::generate(&mut OsRng);
-    Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .map_err(|e| anyhow::anyhow!("hash password: {e}"))
+/// Argon2 is deliberately slow and takes 19 MiB per run: run it off the async workers, a few
+/// at a time, so a flood of logins cannot stall the server or exhaust memory.
+static ARGON2_SLOTS: Semaphore = Semaphore::const_new(4);
+
+pub async fn argon2_blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> anyhow::Result<T> {
+    let _permit = ARGON2_SLOTS.acquire().await?;
+    Ok(tokio::task::spawn_blocking(f).await?)
 }
 
-pub fn verify_password(password: &str, hash: &str) -> bool {
-    PasswordHash::new(hash).is_ok_and(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
+pub async fn hash_password(password: &str) -> anyhow::Result<String> {
+    let password = password.to_owned();
+    argon2_blocking(move || {
+        let salt = SaltString::generate(&mut OsRng);
+        Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .map(|h| h.to_string())
+            .map_err(|e| anyhow::anyhow!("hash password: {e}"))
+    })
+    .await?
+}
+
+pub async fn verify_password(password: &str, hash: &str) -> anyhow::Result<bool> {
+    let (password, hash) = (password.to_owned(), hash.to_owned());
+    argon2_blocking(move || {
+        PasswordHash::new(&hash)
+            .is_ok_and(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
+    })
+    .await
 }
 
 #[derive(Clone)]
@@ -35,6 +54,9 @@ pub struct JwtKeys {
 struct Claims {
     sub: i64,
     exp: i64,
+    /// The user's `token_version` when issued; tokens from before it was bumped are refused.
+    #[serde(default)]
+    ver: i64,
 }
 
 impl JwtKeys {
@@ -45,19 +67,21 @@ impl JwtKeys {
         }
     }
 
-    pub fn issue(&self, user_id: i64) -> anyhow::Result<String> {
+    pub fn issue(&self, user: &User) -> anyhow::Result<String> {
         let exp = (chrono::Utc::now() + chrono::Duration::hours(SESSION_HOURS)).timestamp();
-        Ok(jsonwebtoken::encode(
-            &Header::default(),
-            &Claims { sub: user_id, exp },
-            &self.encoding,
-        )?)
+        let claims = Claims {
+            sub: user.id,
+            exp,
+            ver: user.token_version,
+        };
+        Ok(jsonwebtoken::encode(&Header::default(), &claims, &self.encoding)?)
     }
 
-    fn verify(&self, token: &str) -> Option<i64> {
+    /// Returns (user id, token version).
+    fn verify(&self, token: &str) -> Option<(i64, i64)> {
         jsonwebtoken::decode::<Claims>(token, &self.decoding, &Validation::default())
             .ok()
-            .map(|data| data.claims.sub)
+            .map(|data| (data.claims.sub, data.claims.ver))
     }
 }
 
@@ -77,12 +101,12 @@ impl FromRequestParts<AppState> for AuthUser {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, AppError> {
-        let user_id = bearer(parts)
+        let (user_id, version) = bearer(parts)
             .and_then(|t| state.jwt.verify(t))
             .ok_or(AppError::Unauthorized)?;
-        // Re-read the user so disabling or deleting takes effect immediately.
+        // Re-read the user so disabling, deleting or a password change takes effect immediately.
         match db::user_by_id(&state.db, user_id).await? {
-            Some(user) if user.active => Ok(Self(user)),
+            Some(user) if user.active && user.token_version == version => Ok(Self(user)),
             _ => Err(AppError::Unauthorized),
         }
     }

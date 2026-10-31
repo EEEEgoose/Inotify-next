@@ -19,6 +19,8 @@ pub enum AppError {
     Conflict(String),
     #[error("send queue is full")]
     Busy,
+    #[error("{0}")]
+    TooManyRequests(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -32,6 +34,7 @@ impl AppError {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Busy => StatusCode::SERVICE_UNAVAILABLE,
+            Self::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

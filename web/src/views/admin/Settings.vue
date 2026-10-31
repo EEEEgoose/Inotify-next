@@ -5,40 +5,35 @@
     <el-form label-position="top" style="max-width: 560px" @submit.prevent="save">
       <el-card shadow="never">
         <template #header>基本</template>
-        <el-form-item label="外部访问地址">
-          <el-input v-model="cfg.public_url" :placeholder="placeholders.publicUrl" />
-          <div class="muted">用于生成 GitHub 回调地址；留空则按请求的 Host 推断（反向代理需传递 X-Forwarded-Host/Proto）。</div>
-        </el-form-item>
         <el-form-item label="出站代理">
           <el-input v-model="cfg.proxy" :placeholder="placeholders.proxy" />
-          <div class="muted">所有渠道的 HTTP 请求（含 APNs、GitHub）都经过此代理，邮件除外。留空不使用。</div>
+          <div class="muted">
+            Telegram、企业微信、APNs、Turnstile 的请求经过此代理。Webhook、钉钉、飞书等用户填写的地址直连，
+            防止经代理绕过内网访问限制（设置了 INOTIFY_ALLOW_PRIVATE_TARGETS 时也走代理）。邮件不走代理。留空不使用。
+          </div>
         </el-form-item>
       </el-card>
 
       <el-card shadow="never" style="margin-top: 16px">
-        <template #header>GitHub 登录</template>
+        <template #header>登录人机验证（Cloudflare Turnstile）</template>
         <el-form-item>
-          <el-switch v-model="cfg.github_enabled" active-text="启用" />
+          <el-switch v-model="cfg.turnstile_enabled" active-text="启用" />
         </el-form-item>
-        <el-form-item label="Client ID">
-          <el-input v-model="cfg.github_client_id" />
+        <el-form-item label="Site Key">
+          <el-input v-model="cfg.turnstile_site_key" />
         </el-form-item>
-        <el-form-item label="Client Secret">
+        <el-form-item label="Secret Key">
           <el-input
-            v-model="cfg.github_client_secret"
+            v-model="cfg.turnstile_secret_key"
             type="password"
             show-password
             autocomplete="off"
-            :placeholder="cfg.github_client_secret_set ? '已设置，留空保持不变' : ''"
+            :placeholder="cfg.turnstile_secret_key_set ? '已设置，留空保持不变' : ''"
           />
         </el-form-item>
-        <el-form-item>
-          <el-checkbox v-model="cfg.github_allow_signup">允许未绑定的 GitHub 用户自动注册（普通用户权限）</el-checkbox>
-        </el-form-item>
         <div class="muted">
-          在 GitHub → Settings → Developer settings → OAuth Apps 创建应用，回调地址填：
-          <div class="mono callback">{{ cfg.github_callback_url }}</div>
-          GitHub 账号只按 ID 关联用户。已有账号请先用密码登录，再到「账号」页绑定。
+          在 Cloudflare 控制台 → Turnstile 添加站点（域名填本站域名）获取密钥。启用后密码登录需先通过验证。
+          若密钥填错或无法访问 Cloudflare 导致无法登录，可设置环境变量 INOTIFY_DISABLE_TURNSTILE=1 重启后临时跳过验证。
         </div>
       </el-card>
 
@@ -53,18 +48,14 @@ import { ElMessage } from 'element-plus'
 import { api, type Settings } from '../../api'
 
 const cfg = reactive<Settings>({
-  github_enabled: false,
-  github_client_id: '',
-  github_client_secret: '',
-  github_client_secret_set: false,
-  github_allow_signup: false,
-  github_callback_url: '',
   proxy: '',
-  public_url: '',
+  turnstile_enabled: false,
+  turnstile_site_key: '',
+  turnstile_secret_key: '',
+  turnstile_secret_key_set: false,
 })
 // Kept out of the template: a `//` inside a template string trips vue-tsc 3.3's type check.
 const placeholders = {
-  publicUrl: 'https://inotify.example.com',
   proxy: 'http://127.0.0.1:7890 或 socks5://127.0.0.1:1080',
 }
 const loaded = ref(false)
@@ -91,9 +82,3 @@ async function save() {
   }
 }
 </script>
-
-<style scoped>
-.callback {
-  margin: 6px 0;
-}
-</style>

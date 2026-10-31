@@ -7,9 +7,6 @@ export interface User {
   is_admin: boolean
   active: boolean
   send_token: string
-  github_id: number | null
-  github_login: string | null
-  avatar_url: string | null
   created_at: string
 }
 
@@ -46,14 +43,11 @@ export interface KindInfo {
 }
 
 export interface Settings {
-  github_enabled: boolean
-  github_client_id: string
-  github_client_secret: string
-  github_client_secret_set: boolean
-  github_allow_signup: boolean
-  github_callback_url: string
   proxy: string
-  public_url: string
+  turnstile_enabled: boolean
+  turnstile_site_key: string
+  turnstile_secret_key: string
+  turnstile_secret_key_set: boolean
 }
 
 export interface Stats {
@@ -110,15 +104,14 @@ async function request<T>(method: string, path: string, body?: unknown, bearer =
 }
 
 export const api = {
-  login: (username: string, password: string) =>
-    request<{ token: string; user: User }>('POST', '/api/v1/login', { username, password }),
-  authOptions: () => request<{ github: boolean }>('GET', '/api/v1/auth-options'),
+  login: (username: string, password: string, turnstile_token?: string) =>
+    request<{ token: string; user: User }>('POST', '/api/v1/login', { username, password, turnstile_token }),
+  authOptions: () => request<{ turnstile_site_key: string | null }>('GET', '/api/v1/auth-options'),
   me: () => request<User>('GET', '/api/v1/me'),
+  /** Ends every other session; this one continues with the returned token. */
   changePassword: (old_password: string, new_password: string) =>
-    request('PUT', '/api/v1/me/password', { old_password, new_password }),
+    request<{ token: string }>('PUT', '/api/v1/me/password', { old_password, new_password }),
   resetSendToken: () => request<User>('POST', '/api/v1/me/send-token'),
-  linkGithub: () => request<{ url: string }>('POST', '/api/v1/oauth/github/link'),
-  unlinkGithub: () => request<User>('DELETE', '/api/v1/me/github'),
 
   kinds: () => request<KindInfo[]>('GET', '/api/v1/channel-kinds'),
   channels: () => request<Channel[]>('GET', '/api/v1/channels'),

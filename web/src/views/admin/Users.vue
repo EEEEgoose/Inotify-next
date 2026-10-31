@@ -12,9 +12,6 @@
           <el-tag v-if="row.id === session.user?.id" size="small" type="info">我</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="GitHub" min-width="120">
-        <template #default="{ row }">{{ row.github_login ?? '—' }}</template>
-      </el-table-column>
       <el-table-column label="管理员" width="90">
         <template #default="{ row }">
           <el-switch

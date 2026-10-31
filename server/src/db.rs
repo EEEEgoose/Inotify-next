@@ -9,6 +9,14 @@ use std::{path::Path, str::FromStr};
 
 pub async fn connect(data_dir: &Path) -> anyhow::Result<SqlitePool> {
     std::fs::create_dir_all(data_dir).with_context(|| format!("create data dir {}", data_dir.display()))?;
+    // The database holds channel secrets and the JWT key: keep it from other local users.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700)) {
+            tracing::warn!("restrict permissions of {}: {e}", data_dir.display());
+        }
+    }
     let url = format!("sqlite://{}", data_dir.join("inotify.db").display());
     let opts = SqliteConnectOptions::from_str(&url)?
         .create_if_missing(true)
@@ -77,10 +85,9 @@ pub struct User {
     pub is_admin: bool,
     pub active: bool,
     pub send_token: String,
-    pub github_id: Option<i64>,
-    pub github_login: Option<String>,
-    pub avatar_url: Option<String>,
     pub created_at: String,
+    #[serde(skip)]
+    pub token_version: i64,
 }
 
 impl User {

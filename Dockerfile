@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # 1. Web UI
-FROM node:22-alpine AS web
+# Base images are pinned by digest; Dependabot (.github/dependabot.yml) proposes updates.
+FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -9,7 +10,7 @@ COPY web/ ./
 RUN npm run build
 
 # 2. Server, with the web UI embedded
-FROM rust:1.96-bookworm AS server
+FROM rust:1.96-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663 AS server
 WORKDIR /src/server
 COPY server/ ./
 COPY --from=web /src/web/dist /src/web/dist

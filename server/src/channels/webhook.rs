@@ -1,5 +1,5 @@
-use super::{ensure_success, str_field, Field, FieldKind, Message, SendCtx};
-use anyhow::Context;
+use super::{str_field, Field, FieldKind, Message, SendCtx};
+use anyhow::{bail, Context};
 use serde_json::Value;
 use url::Url;
 
@@ -58,7 +58,11 @@ pub async fn send(ctx: &SendCtx, config: &Value, msg: &Message) -> anyhow::Resul
             .header(reqwest::header::CONTENT_TYPE, content_type)
             .body(body)
     };
-    ensure_success(request.send().await?).await?;
+    // Only the status is reported: echoing the body would let a user read arbitrary pages.
+    let status = request.send().await?.status();
+    if !status.is_success() {
+        bail!("HTTP {status}");
+    }
     Ok(())
 }
 

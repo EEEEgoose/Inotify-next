@@ -19,9 +19,11 @@ use wiremock::{
 
 #[path = "support/more.rs"]
 mod more;
+#[path = "support/security.rs"]
+mod security;
 
 pub struct App {
-    router: Router,
+    pub router: Router,
     admin_password: String,
 }
 
@@ -33,12 +35,13 @@ pub async fn app_with(mock: &MockServer, allow_private: bool) -> App {
         data_dir: Default::default(),
         allow_private_targets: allow_private,
         send_concurrency: 4,
+        trust_proxy: false,
+        disable_turnstile: false,
         endpoints: Endpoints {
             apns: mock.uri(),
             telegram: mock.uri(),
             wecom: mock.uri(),
-            github_web: mock.uri(),
-            github_api: mock.uri(),
+            turnstile: mock.uri(),
         },
     };
     let state = AppState::new(pool, &config).await.unwrap();
@@ -327,14 +330,14 @@ pub fn form(uri: &str, body: &str) -> Request<Body> {
 async fn bark_register_and_push() {
     let mock = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/3/device/tok1"))
+        .and(path("/3/device/aa01"))
         .and(header_is("apns-topic", "me.fin.bark"))
         .and(header_is("apns-push-type", "alert"))
         .respond_with(ResponseTemplate::new(200))
         .mount(&mock)
         .await;
     Mock::given(method("POST"))
-        .and(path("/3/device/gone"))
+        .and(path("/3/device/bb02"))
         .respond_with(ResponseTemplate::new(410).set_body_json(json!({ "reason": "Unregistered" })))
         .mount(&mock)
         .await;
@@ -348,14 +351,14 @@ async fn bark_register_and_push() {
     assert_eq!((status, pong["message"].as_str()), (StatusCode::OK, Some("pong")));
 
     // The app registers without a key and gets one back.
-    let (status, reg) = app.send(form(&format!("{base}/register"), "device_token=tok1")).await;
+    let (status, reg) = app.send(form(&format!("{base}/register"), "device_token=aa01")).await;
     assert_eq!(status, StatusCode::OK, "{reg}");
     let key = reg["data"]["device_key"].as_str().unwrap().to_string();
     assert_eq!(reg["data"]["key"], key.as_str());
     let (_, channels) = app.call(Method::GET, "/api/v1/channels", Some(&token), None).await;
     assert_eq!(channels.as_array().unwrap().len(), 1);
     assert_eq!(channels[0]["kind"], "bark");
-    assert_eq!(channels[0]["config"]["device_token"], "tok1");
+    assert_eq!(channels[0]["config"]["device_token"], "aa01");
 
     // Users cannot create Bark channels by hand, nor overwrite the device token.
     let (status, _) = app
@@ -375,7 +378,7 @@ async fn bark_register_and_push() {
             Some(json!({ "config": { "device_token": "evil", "sound": "minuet" } })),
         )
         .await;
-    assert_eq!(updated["config"]["device_token"], "tok1");
+    assert_eq!(updated["config"]["device_token"], "aa01");
     assert_eq!(updated["config"]["sound"], "minuet");
 
     let (status, _) = app
@@ -423,7 +426,7 @@ async fn bark_register_and_push() {
     let (_, reg) = app
         .send(form(
             &format!("{base}/register"),
-            &format!("device_key={key}&device_token=gone"),
+            &format!("device_key={key}&device_token=bb02"),
         ))
         .await;
     assert_eq!(reg["data"]["device_key"], key.as_str());
@@ -466,7 +469,7 @@ async fn bark_keys_are_scoped_to_their_owner() {
     let admin_base = format!("/bark/{}", admin["send_token"].as_str().unwrap());
     let eve_base = format!("/bark/{}", eve["send_token"].as_str().unwrap());
     let (_, reg) = app
-        .send(form(&format!("{admin_base}/register"), "device_token=admin-phone"))
+        .send(form(&format!("{admin_base}/register"), "device_token=ad01"))
         .await;
     let admin_key = reg["data"]["device_key"].as_str().unwrap().to_string();
 
@@ -482,7 +485,7 @@ async fn bark_keys_are_scoped_to_their_owner() {
     let (_, reg) = app
         .send(form(
             &format!("{eve_base}/register"),
-            &format!("device_key={admin_key}&device_token=eve-phone"),
+            &format!("device_key={admin_key}&device_token=ee02"),
         ))
         .await;
     assert_ne!(reg["data"]["device_key"], admin_key.as_str());
@@ -490,5 +493,5 @@ async fn bark_keys_are_scoped_to_their_owner() {
     let (_, channels) = app
         .call(Method::GET, "/api/v1/channels", Some(&admin_token), None)
         .await;
-    assert_eq!(channels[0]["config"]["device_token"], "admin-phone");
+    assert_eq!(channels[0]["config"]["device_token"], "ad01");
 }

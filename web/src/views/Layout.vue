@@ -7,7 +7,7 @@
       </div>
       <el-dropdown v-if="session.user" @command="onCommand">
         <span class="user">
-          <el-avatar :size="28" :src="session.user.avatar_url ?? undefined">
+          <el-avatar :size="28">
             {{ session.user.username.slice(0, 1).toUpperCase() }}
           </el-avatar>
           <span class="name">{{ session.user.username }}</span>

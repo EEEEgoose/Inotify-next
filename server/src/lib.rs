@@ -7,6 +7,8 @@ pub mod dispatch;
 pub mod error;
 pub mod net;
 pub mod settings;
+pub mod throttle;
+pub mod turnstile;
 
 use auth::JwtKeys;
 use channels::{bark::Apns, SendCtx};
@@ -15,10 +17,10 @@ use dispatch::Dispatcher;
 use settings::Settings;
 use sqlx::SqlitePool;
 use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, RwLock},
-    time::Instant,
+    sync::{Arc, RwLock},
+    time::Duration,
 };
+use throttle::FailureLimiter;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -28,11 +30,13 @@ pub struct AppState {
     pub send_ctx: Arc<SendCtx>,
     pub settings: Arc<RwLock<Settings>>,
     pub endpoints: Arc<Endpoints>,
-    pub oauth_states: Arc<Mutex<OauthStates>>,
+    pub login_failures: Arc<FailureLimiter>,
+    pub trust_proxy: bool,
+    pub disable_turnstile: bool,
 }
 
-/// Pending GitHub OAuth flows: state -> (user to link, or None to log in; when started).
-pub type OauthStates = HashMap<String, (Option<i64>, Instant)>;
+/// Window in which failed logins are counted.
+pub const LOGIN_FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 impl AppState {
     pub async fn new(db: SqlitePool, config: &Config) -> anyhow::Result<Self> {
@@ -54,7 +58,9 @@ impl AppState {
             send_ctx,
             settings: Arc::new(RwLock::new(settings)),
             endpoints: Arc::new(config.endpoints.clone()),
-            oauth_states: Default::default(),
+            login_failures: Arc::new(FailureLimiter::new(LOGIN_FAILURE_WINDOW)),
+            trust_proxy: config.trust_proxy,
+            disable_turnstile: config.disable_turnstile,
         })
     }
 
@@ -71,6 +77,6 @@ pub async fn bootstrap_admin(db: &SqlitePool) -> anyhow::Result<Option<String>> 
         return Ok(None);
     }
     let password = db::random_token(16);
-    db::create_user(db, "admin", Some(&auth::hash_password(&password)?), true).await?;
+    db::create_user(db, "admin", Some(&auth::hash_password(&password).await?), true).await?;
     Ok(Some(password))
 }

@@ -6,7 +6,6 @@ export const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: '/login', name: 'login', component: () => import('./views/Login.vue'), meta: { public: true } },
-    { path: '/oauth', name: 'oauth', component: () => import('./views/OAuth.vue'), meta: { public: true } },
     {
       path: '/',
       component: () => import('./views/Layout.vue'),

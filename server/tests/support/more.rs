@@ -1,16 +1,12 @@
-//! Channels added in step 3, GitHub login, settings and stats.
+//! Channels added in step 3, settings and stats.
 
 use super::{app, wait_requests, App};
-use axum::{
-    body::Body,
-    http::{header, Method, Request, StatusCode},
-};
+use axum::http::{Method, StatusCode};
 use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpListener,
 };
-use tower::ServiceExt;
 use wiremock::{
     matchers::{method, path, query_param},
     Mock, MockServer, ResponseTemplate,
@@ -235,37 +231,11 @@ async fn email_over_smtp() {
     );
 }
 
-async fn raw(app: &App, req: Request<Body>) -> axum::response::Response {
-    app.router.clone().oneshot(req).await.unwrap()
-}
-
-fn location(resp: &axum::response::Response) -> String {
-    resp.headers()[header::LOCATION].to_str().unwrap().to_string()
-}
-
 #[tokio::test]
-async fn github_login_never_takes_over_local_accounts() {
+async fn settings_reject_bad_proxy() {
     let mock = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/login/oauth/access_token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access_token": "gho_x" })))
-        .mount(&mock)
-        .await;
-    // A GitHub user whose login equals the local administrator's username.
-    Mock::given(method("GET"))
-        .and(path("/user"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({ "id": 99, "login": "admin", "avatar_url": "https://a/x.png" })),
-        )
-        .mount(&mock)
-        .await;
     let app = app(&mock).await;
     let (token, _) = app.admin().await;
-
-    let (_, options) = app.call(Method::GET, "/api/v1/auth-options", None, None).await;
-    assert_eq!(options["github"], false);
-
     let (status, _) = app
         .call(
             Method::PUT,
@@ -280,121 +250,11 @@ async fn github_login_never_takes_over_local_accounts() {
             Method::PUT,
             "/api/v1/settings",
             Some(&token),
-            Some(json!({
-                "github_enabled": true,
-                "github_client_id": "cid",
-                "github_client_secret": "csecret",
-                "github_allow_signup": true,
-                "public_url": "https://inotify.example.com/"
-            })),
+            Some(json!({ "proxy": " http://127.0.0.1:7890 " })),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{settings}");
-    assert_eq!(settings["github_client_secret"], "");
-    assert_eq!(settings["github_client_secret_set"], true);
-    assert_eq!(
-        settings["github_callback_url"],
-        "https://inotify.example.com/api/v1/oauth/github/callback"
-    );
-
-    // Saving again without the secret keeps it.
-    let mut again = settings.clone();
-    again
-        .as_object_mut()
-        .unwrap()
-        .retain(|k, _| !k.ends_with("_set") && !k.ends_with("_url") || k == "public_url");
-    app.call(Method::PUT, "/api/v1/settings", Some(&token), Some(again))
-        .await;
-    let (_, options) = app.call(Method::GET, "/api/v1/auth-options", None, None).await;
-    assert_eq!(options["github"], true);
-
-    // Start: redirect to GitHub with a state, which is also set as a cookie.
-    let resp = raw(
-        &app,
-        Request::get("/api/v1/oauth/github/start").body(Body::empty()).unwrap(),
-    )
-    .await;
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-    let to = url::Url::parse(&location(&resp)).unwrap();
-    assert_eq!(to.path(), "/login/oauth/authorize");
-    let state: String = to.query_pairs().find(|(k, _)| k == "state").unwrap().1.into();
-    let cookie = resp.headers()[header::SET_COOKIE].to_str().unwrap().to_string();
-    assert!(cookie.contains("HttpOnly") && cookie.contains("Secure"), "{cookie}");
-    let cookie = cookie.split(';').next().unwrap().to_string();
-
-    // Without the cookie (another browser), the callback is refused.
-    let callback = format!("/api/v1/oauth/github/callback?code=c&state={state}");
-    let resp = raw(&app, Request::get(&callback).body(Body::empty()).unwrap()).await;
-    assert!(location(&resp).starts_with("/#/login?error="));
-
-    let resp = raw(
-        &app,
-        Request::get(&callback)
-            .header(header::COOKIE, &cookie)
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    let to = location(&resp);
-    let jwt = to.strip_prefix("/#/oauth?token=").unwrap_or_else(|| panic!("{to}"));
-    let (_, me) = app.call(Method::GET, "/api/v1/me", Some(jwt), None).await;
-    assert_eq!(me["username"], "admin-2");
-    assert_eq!(me["is_admin"], false);
-    assert_eq!(me["has_password"], false);
-    assert_eq!(me["github_login"], "admin");
-
-    // The state is single-use.
-    let resp = raw(
-        &app,
-        Request::get(&callback)
-            .header(header::COOKIE, &cookie)
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert!(location(&resp).starts_with("/#/login?error="));
-
-    // That GitHub account is now taken: linking it to the administrator fails.
-    let (_, link) = app
-        .call(Method::POST, "/api/v1/oauth/github/link", Some(&token), None)
-        .await;
-    let resp = raw(
-        &app,
-        Request::get(link["url"].as_str().unwrap()).body(Body::empty()).unwrap(),
-    )
-    .await;
-    let to = url::Url::parse(&location(&resp)).unwrap();
-    let state: String = to.query_pairs().find(|(k, _)| k == "state").unwrap().1.into();
-    let cookie = resp.headers()[header::SET_COOKIE]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_string();
-    let resp = raw(
-        &app,
-        Request::get(format!("/api/v1/oauth/github/callback?code=c&state={state}"))
-            .header(header::COOKIE, cookie)
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    let to = location(&resp);
-    assert!(to.starts_with("/#/login?error="), "{to}");
-
-    // The GitHub-only account can set a first password without an old one, then unlink.
-    let (status, _) = app
-        .call(
-            Method::PUT,
-            "/api/v1/me/password",
-            Some(jwt),
-            Some(json!({ "new_password": "a-new-password" })),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK);
-    let (_, me) = app.call(Method::DELETE, "/api/v1/me/github", Some(jwt), None).await;
-    assert_eq!(me["github_login"], Value::Null);
+    assert_eq!(settings["proxy"], "http://127.0.0.1:7890");
 }
 
 #[tokio::test]
@@ -461,7 +321,7 @@ async fn channel_backup_round_trip() {
         .await;
     let base = format!("/bark/{}", user["send_token"].as_str().unwrap());
     let (status, _) = app
-        .send(super::form(&format!("{base}/register"), "device_token=tok1"))
+        .send(super::form(&format!("{base}/register"), "device_token=aa01"))
         .await;
     assert_eq!(status, StatusCode::OK);
 
@@ -553,6 +413,6 @@ async fn channel_backup_round_trip() {
     assert_eq!(result, json!({ "imported": 2, "skipped": 0, "rekeyed": 2 }));
     let (_, mine) = app.call(Method::GET, "/api/v1/channels", Some(&carol), None).await;
     let bark = mine.as_array().unwrap().iter().find(|c| c["kind"] == "bark").unwrap();
-    assert_eq!(bark["config"]["device_token"], "tok1");
+    assert_eq!(bark["config"]["device_token"], "aa01");
     assert!(channels.as_array().unwrap().iter().all(|c| c["key"] != bark["key"]));
 }

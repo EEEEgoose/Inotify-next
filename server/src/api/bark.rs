@@ -7,7 +7,10 @@
 //! Request and response shapes follow github.com/Finb/bark-server.
 
 use crate::{
-    channels::{bark::initial_config, Kind, Message},
+    channels::{
+        bark::{initial_config, valid_device_token},
+        Kind, Message,
+    },
     db::{self, User},
     dispatch::Job,
     error::AppError,
@@ -23,6 +26,9 @@ use axum::{
 };
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+
+/// Most device keys one batch push may name.
+const MAX_BATCH: usize = 100;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -161,7 +167,7 @@ async fn register(
     if device_token.is_empty() {
         return failed(StatusCode::BAD_REQUEST, "device token is empty");
     }
-    if device_token.len() > 160 {
+    if !valid_device_token(&device_token) {
         return failed(StatusCode::BAD_REQUEST, "device token is invalid");
     }
 
@@ -175,7 +181,8 @@ async fn register(
 }
 
 /// Refreshes the token of the user's existing Bark channel with this key, or creates a channel.
-/// A key owned by someone else (or by a non-Bark channel) is never reused.
+/// A key owned by someone else (or by a non-Bark channel), equal to a send token, or not made of
+/// 1 to 64 letters and digits is never used.
 async fn register_device(state: &AppState, user: &User, device_key: &str, device_token: &str) -> sqlx::Result<String> {
     let existing = match device_key {
         "" => None,
@@ -191,7 +198,13 @@ async fn register_device(state: &AppState, user: &User, device_key: &str, device
             return Ok(channel.key.clone());
         }
     }
-    let key = if device_key.is_empty() || existing.is_some() {
+    let well_formed = (1..=64).contains(&device_key.len()) && device_key.chars().all(|c| c.is_ascii_alphanumeric());
+    let is_send_token = well_formed
+        && sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE send_token = ?)")
+            .bind(device_key)
+            .fetch_one(&state.db)
+            .await?;
+    let key = if !well_formed || is_send_token || existing.is_some() {
         db::random_token(22)
     } else {
         device_key.to_string()
@@ -250,6 +263,12 @@ async fn push(
         Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).map(String::from).collect(),
         Some(_) => return failed(StatusCode::BAD_REQUEST, "invalid type for device_keys"),
     };
+    if batch.len() > MAX_BATCH {
+        return failed(
+            StatusCode::BAD_REQUEST,
+            format!("at most {MAX_BATCH} device keys per push"),
+        );
+    }
     let device_key = take_string(&mut params, "device_key").unwrap_or_default();
     let msg = Message {
         title: take_string(&mut params, "title"),

@@ -11,12 +11,19 @@
         <el-form-item label="密码">
           <el-input v-model="form.password" type="password" show-password autocomplete="current-password" />
         </el-form-item>
-        <el-button type="primary" native-type="submit" :loading="loading" class="wide">登录</el-button>
+        <el-form-item v-if="turnstileSiteKey">
+          <TurnstileWidget ref="turnstile" :site-key="turnstileSiteKey" @token="(t) => (turnstileToken = t)" />
+        </el-form-item>
+        <el-button
+          type="primary"
+          native-type="submit"
+          :loading="loading"
+          :disabled="!!turnstileSiteKey && !turnstileToken"
+          class="wide"
+        >
+          登录
+        </el-button>
       </el-form>
-      <template v-if="github">
-        <el-divider>或</el-divider>
-        <el-button class="wide" tag="a" href="/api/v1/oauth/github/start">使用 GitHub 登录</el-button>
-      </template>
     </el-card>
   </div>
 </template>
@@ -26,28 +33,33 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { startSession } from '../session'
+import TurnstileWidget from '../components/TurnstileWidget.vue'
 
 const route = useRoute()
 const router = useRouter()
 const form = reactive({ username: '', password: '' })
 const loading = ref(false)
-const github = ref(false)
-const error = ref(typeof route.query.error === 'string' ? route.query.error : '')
+const turnstileSiteKey = ref<string | null>(null)
+const turnstileToken = ref('')
+const turnstile = ref<InstanceType<typeof TurnstileWidget>>()
+const error = ref('')
 
 onMounted(async () => {
-  github.value = (await api.authOptions().catch(() => ({ github: false }))).github
+  const options = await api.authOptions().catch(() => ({ turnstile_site_key: null }))
+  turnstileSiteKey.value = options.turnstile_site_key
 })
 
 async function submit() {
   loading.value = true
   error.value = ''
   try {
-    const { token } = await api.login(form.username, form.password)
+    const { token } = await api.login(form.username, form.password, turnstileToken.value || undefined)
     await startSession(token)
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/channels'
     router.replace(redirect)
   } catch (e) {
     error.value = (e as Error).message
+    turnstile.value?.reset()
   } finally {
     loading.value = false
   }

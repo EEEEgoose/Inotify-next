@@ -1,4 +1,5 @@
 use inotify::{api, bootstrap_admin, config::Config, db, AppState};
+use std::net::SocketAddr;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -16,9 +17,13 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::new(pool, &config).await?;
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;
     tracing::info!("listening on {}", config.listen);
-    axum::serve(listener, api::router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // The peer address is the client IP for login throttling (unless a trusted proxy forwards it).
+    axum::serve(
+        listener,
+        api::router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     Ok(())
 }
 

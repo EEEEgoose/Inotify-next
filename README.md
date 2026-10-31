@@ -39,9 +39,12 @@ docker logs inotify 2>&1 | grep administrator
 location / {
     proxy_pass http://127.0.0.1:8000;
     proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
+
+使用反向代理时请设置 `INOTIFY_TRUST_PROXY=1`（`docker run -e INOTIFY_TRUST_PROXY=1 ...`），否则登录失败次数会按代理的 IP 统计，所有访问者共用一个额度。只有服务端口不能被绕过代理直接访问时才应开启该项。
 
 ### 环境变量
 
@@ -50,9 +53,13 @@ location / {
 | `INOTIFY_LISTEN` | `0.0.0.0:8000` | 监听地址 |
 | `INOTIFY_DATA_DIR` | `data`（镜像内为 `/data`） | 数据目录 |
 | `INOTIFY_SEND_CONCURRENCY` | `8` | 同时处理的发送任务数 |
-| `INOTIFY_ALLOW_PRIVATE_TARGETS` | 关闭 | 允许 Webhook / 邮件访问内网地址（如家里的 Home Assistant）。默认禁止，防止 SSRF |
+| `INOTIFY_ALLOW_PRIVATE_TARGETS` | 关闭 | 允许 Webhook / 邮件访问内网地址（如家里的 Home Assistant）。默认禁止，防止 SSRF。开启后任何用户都能让服务器访问内网，**只适合单用户或可信用户** |
+| `INOTIFY_TRUST_PROXY` | 关闭 | 位于反向代理之后：客户端 IP 取 `X-Forwarded-For` 的最后一项 |
+| `INOTIFY_DISABLE_TURNSTILE` | 关闭 | 临时跳过登录人机验证，用于 Turnstile 密钥填错或无法访问 Cloudflare 时恢复登录 |
 
-出站代理、外部访问地址、GitHub 登录在后台「系统设置」中配置，修改后立即生效。
+出站代理、登录人机验证在后台「系统设置」中配置，修改后立即生效。出站代理用于 Telegram、企业微信、APNs、Turnstile 等固定接口；Webhook、钉钉、飞书等用户填写的地址直连（开启 `INOTIFY_ALLOW_PRIVATE_TARGETS` 时也走代理）。
+
+同一 IP 15 分钟内登录失败 10 次（或同一用户名失败 20 次）后暂停登录 15 分钟；修改或重置密码、禁用用户会让该用户的其他登录会话立即失效。
 
 ## 发送消息
 
@@ -84,11 +91,11 @@ Inotify 按 [bark-server](https://github.com/Finb/bark-server) 的协议内置�
 
 在「消息渠道」页点「导出」，设置密码后下载加密备份（Argon2id + AES-256-GCM，包含渠道密钥和 Bark 设备）；在新服务器或新账号上点「导入」，选择文件并输入同一密码即可恢复。已有相同 Key 的渠道会跳过；Key 被其他用户占用时生成新 Key。
 
-## GitHub 登录
+## 登录人机验证（Cloudflare Turnstile）
 
-1. 在 GitHub → Settings → Developer settings → OAuth Apps 创建应用，回调地址见后台「系统设置」页
-2. 在「系统设置」填入 Client ID / Secret 并启用
-3. 已有账号先用密码登录，在「账号」页绑定 GitHub。GitHub 账号只按 ID 关联，不按用户名匹配；可选允许未绑定的 GitHub 用户自动注册为普通用户
+1. 在 Cloudflare 控制台 → Turnstile 添加站点，域名填 Inotify 的域名，获得 Site Key 和 Secret Key
+2. 在「系统设置」填入并启用，登录页随即出现验证组件；服务端会向 Cloudflare 校验每次登录的验证结果
+3. 无法登录时，用 `INOTIFY_DISABLE_TURNSTILE=1` 重启后登录，修正设置再去掉该变量
 
 ## 从 inotify 2.x 升级
 

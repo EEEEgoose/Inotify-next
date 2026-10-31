@@ -9,20 +9,17 @@ const KEY: &str = "app_settings";
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    pub github_enabled: bool,
-    pub github_client_id: String,
-    pub github_client_secret: String,
-    /// Create an account for a GitHub user who has none yet.
-    pub github_allow_signup: bool,
     /// Proxy for outgoing HTTP requests, e.g. `http://127.0.0.1:7890` or `socks5://...`.
     pub proxy: String,
-    /// External address, e.g. `https://inotify.example.com`; used for the OAuth callback.
-    pub public_url: String,
+    /// Cloudflare Turnstile on the login page.
+    pub turnstile_enabled: bool,
+    pub turnstile_site_key: String,
+    pub turnstile_secret_key: String,
 }
 
 impl Settings {
-    pub fn github_ready(&self) -> bool {
-        self.github_enabled && !self.github_client_id.is_empty() && !self.github_client_secret.is_empty()
+    pub fn turnstile_ready(&self) -> bool {
+        self.turnstile_enabled && !self.turnstile_site_key.is_empty() && !self.turnstile_secret_key.is_empty()
     }
 }
 

@@ -149,6 +149,9 @@ pub async fn send(ctx: &SendCtx, channel_id: i64, config: &Value, msg: &Message)
     if device_token.is_empty() {
         bail!("device token is empty, open the Bark app to register again");
     }
+    if !valid_device_token(device_token) {
+        bail!("device token is invalid, open the Bark app to register again");
+    }
     let (payload, is_background, collapse_id) = build_payload(config, msg);
     let apns = &ctx.apns;
     let expiration = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp();
@@ -186,6 +189,11 @@ pub async fn send(ctx: &SendCtx, channel_id: i64, config: &Value, msg: &Message)
             .await?;
     }
     bail!("APNs {status}: {reason}")
+}
+
+/// APNs device tokens are hex; anything else must not reach the request path.
+pub fn valid_device_token(token: &str) -> bool {
+    (1..=160).contains(&token.len()) && token.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Config for a freshly registered device.

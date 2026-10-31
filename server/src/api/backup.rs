@@ -3,7 +3,7 @@
 //! The file is JSON: the channel list encrypted with AES-256-GCM, keyed by Argon2id(password, salt).
 
 use crate::{
-    auth::AuthUser,
+    auth::{argon2_blocking, AuthUser},
     channels::Kind,
     db::{self, Channel},
     error::{AppError, AppResult},
@@ -42,15 +42,14 @@ struct Entry {
 
 /// Argon2id with the crate's default (OWASP) cost; part of the version 1 format.
 async fn derive_key(password: String, salt: Vec<u8>) -> AppResult<[u8; 32]> {
-    tokio::task::spawn_blocking(move || {
+    argon2_blocking(move || {
         let mut key = [0u8; 32];
         Argon2::new(Algorithm::Argon2id, Version::V0x13, Params::default())
             .hash_password_into(password.as_bytes(), &salt, &mut key)
-            .map_err(|e| anyhow!("argon2: {e}"))?;
+            .map_err(|e| AppError::Internal(anyhow!("argon2: {e}")))?;
         Ok(key)
     })
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?
+    .await?
 }
 
 #[derive(Deserialize)]

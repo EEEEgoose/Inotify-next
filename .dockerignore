@@ -4,8 +4,6 @@
 **/target
 web/dist
 server/data
-Inotify
-Inotify.Vue
 public
 LICENSE
 README.md
